@@ -1,0 +1,42 @@
+# Rate-limit tier policies for the Gatekeeper gateway.
+#
+# Algorithm: token bucket, implemented atomically in Redis via a Lua script
+# (gatekeeper/rate_limit/lua/token_bucket.lua). See docs/rate-limiting.md for
+# the full design rationale and trade-off discussion.
+#
+# capacity:            max tokens in the bucket (burst allowance ceiling)
+# refill_rate_per_sec: tokens added back per second (sustained quota)
+# burst:               extra tokens on top of capacity allowed transiently
+#
+# A client's effective bucket key is (api_key_id, rate_limit_scope).
+# Unauthenticated/global traffic is limited by the "anonymous" tier.
+
+tiers:
+  anonymous:
+    capacity: 10
+    refill_rate_per_sec: 0.2   # 12 req/min
+    burst: 0
+
+  free:
+    capacity: 20
+    refill_rate_per_sec: 1.0   # 60 req/min
+    burst: 5
+
+  standard:
+    capacity: 100
+    refill_rate_per_sec: 5.0   # 300 req/min
+    burst: 20
+
+  premium:
+    capacity: 500
+    refill_rate_per_sec: 25.0  # 1500 req/min
+    burst: 100
+
+# Per-route overrides layered on top of the client's tier bucket. A request
+# must pass BOTH its tier bucket and its route bucket (if the route defines
+# a scope below) to be forwarded.
+route_scopes:
+  default:
+    capacity: 50
+    refill_rate_per_sec: 10.0
+    burst: 10

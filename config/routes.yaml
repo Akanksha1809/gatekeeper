@@ -1,0 +1,100 @@
+# Route table for the Gatekeeper gateway.
+#
+# Each entry maps a path *prefix* to an upstream service. This is the only
+# place new upstreams are wired in -- the proxy code never lets a client
+# choose an arbitrary destination (no open-proxy / SSRF).
+#
+# Fields:
+#   prefix:            path prefix clients call, e.g. /api/users
+#   upstream_url:      base URL of the backend service (internal network only)
+#   strip_prefix:      if true, the prefix is removed before forwarding
+#   methods:           allowed HTTP methods for this route
+#   timeout_seconds:   {connect, read, write, pool} overrides for this route
+#   retry:             retry policy override for this route
+#   circuit_breaker:   circuit breaker policy override for this route
+#   rate_limit_scope:  name of the rate-limit policy bucket this route uses
+
+routes:
+  - name: users
+    prefix: /api/users
+    upstream_url: http://healthy-service:9001
+    strip_prefix: true
+    methods: [GET, POST, PUT, PATCH, DELETE]
+    timeout_seconds:
+      connect: 2.0
+      read: 5.0
+      write: 5.0
+      pool: 2.0
+    retry:
+      enabled: true
+      max_attempts: 3
+      backoff_base_seconds: 0.1
+      backoff_max_seconds: 2.0
+    circuit_breaker:
+      failure_threshold: 5
+      cooldown_seconds: 15
+      half_open_max_calls: 2
+    rate_limit_scope: default
+
+  - name: orders
+    prefix: /api/orders
+    upstream_url: http://healthy-service:9001
+    strip_prefix: true
+    methods: [GET, POST, PUT, PATCH, DELETE]
+    timeout_seconds:
+      connect: 2.0
+      read: 5.0
+      write: 5.0
+      pool: 2.0
+    retry:
+      enabled: true
+      max_attempts: 3
+      backoff_base_seconds: 0.1
+      backoff_max_seconds: 2.0
+    circuit_breaker:
+      failure_threshold: 5
+      cooldown_seconds: 15
+      half_open_max_calls: 2
+    rate_limit_scope: default
+
+  - name: demo-slow
+    prefix: /api/demo/slow
+    upstream_url: http://slow-service:9002
+    strip_prefix: true
+    methods: [GET, POST]
+    timeout_seconds:
+      connect: 1.0
+      read: 2.0
+      write: 2.0
+      pool: 1.0
+    retry:
+      enabled: false
+      max_attempts: 1
+      backoff_base_seconds: 0.1
+      backoff_max_seconds: 1.0
+    circuit_breaker:
+      failure_threshold: 3
+      cooldown_seconds: 10
+      half_open_max_calls: 1
+    rate_limit_scope: default
+
+  - name: demo-flaky
+    prefix: /api/demo/flaky
+    upstream_url: http://flaky-service:9003
+    strip_prefix: true
+    methods: [GET, POST]
+    timeout_seconds:
+      connect: 1.0
+      read: 2.0
+      write: 2.0
+      pool: 1.0
+    retry:
+      enabled: true
+      max_attempts: 3
+      backoff_base_seconds: 0.1
+      backoff_max_seconds: 1.0
+    circuit_breaker:
+      failure_threshold: 3
+      cooldown_seconds: 10
+      half_open_max_calls: 1
+    rate_limit_scope: default

@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv venv -p ${{ env.PYTHON_VERSION }} .venv
+      - run: uv pip install -p .venv -e ".[dev]"
+      - run: source .venv/bin/activate && ruff check gatekeeper demo_upstreams tests
+      - run: source .venv/bin/activate && ruff format --check gatekeeper demo_upstreams tests
+      - run: source .venv/bin/activate && mypy gatekeeper || true # non-blocking: see docs/testing.md
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv venv -p ${{ env.PYTHON_VERSION }} .venv
+      - run: uv pip install -p .venv -e ".[dev]"
+      - run: source .venv/bin/activate && bandit -r gatekeeper -ll
+      - run: source .venv/bin/activate && pip-audit --strict || true # non-blocking: upstream advisories change daily
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv venv -p ${{ env.PYTHON_VERSION }} .venv
+      - run: uv pip install -p .venv -e ".[dev]"
+      - run: source .venv/bin/activate && pytest tests/unit -v --cov=gatekeeper --cov-report=term-missing
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: gatekeeper
+          POSTGRES_USER: gatekeeper
+          POSTGRES_PASSWORD: ci-test-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gatekeeper -d gatekeeper"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      GATEKEEPER_DATABASE_URL: postgresql+asyncpg://gatekeeper:ci-test-password@localhost:5432/gatekeeper
+      GATEKEEPER_REDIS_URL: redis://localhost:6379/0
+      GATEKEEPER_ROUTES_CONFIG: ${{ github.workspace }}/config/routes.yaml
+      GATEKEEPER_POLICIES_CONFIG: ${{ github.workspace }}/config/policies.yaml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv venv -p ${{ env.PYTHON_VERSION }} .venv
+      - run: uv pip install -p .venv -e ".[dev]"
+      - run: source .venv/bin/activate && alembic upgrade head
+      - run: source .venv/bin/activate && pytest tests/integration -v
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build gatekeeper image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: gatekeeper:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build demo upstream image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: demo_upstreams/Dockerfile
+          push: false
+          tags: gatekeeper-demo:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Scan gatekeeper image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: gatekeeper:ci
+          severity: CRITICAL,HIGH
+          exit-code: "0" # non-blocking: report findings without failing the build

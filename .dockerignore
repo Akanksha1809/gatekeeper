@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.db
+.env
+postgres-data/
+redis-data/
+grafana-data/
+prometheus-data/
+locust-reports/
+tests/

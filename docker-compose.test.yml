@@ -1,0 +1,16 @@
+# Override used ONLY for running the integration test suite from the host
+# (see scripts/run_integration_tests.sh). It punches a localhost-only hole
+# through the "data" network's isolation for postgres/redis so pytest can
+# reach them directly; the base docker-compose.yml alone keeps them fully
+# internal, which is the intended production-like posture.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${TEST_POSTGRES_PORT:-55432}:5432"
+  redis:
+    ports:
+      - "127.0.0.1:${TEST_REDIS_PORT:-56379}:6379"
+
+networks:
+  data:
+    internal: false
