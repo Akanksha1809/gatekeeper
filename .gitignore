@@ -20,3 +20,4 @@ redis-data/
 grafana-data/
 prometheus-data/
 locust-reports/
+docs/*.cast

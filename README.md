@@ -1,16 +1,82 @@
 # Gatekeeper -- API Gateway and Traffic Control Platform
 
-A production-style API gateway: reverse proxying, API-key authentication,
-Redis-backed rate limiting (token bucket), timeouts/retries, per-upstream
-circuit breakers, request correlation IDs, structured logging, Prometheus
-metrics, and a Grafana dashboard -- all runnable locally with one
-`docker-compose up`.
+Gatekeeper is a production-style API gateway that sits in front of your
+backend services and centralizes the traffic-control concerns every
+service-to-service boundary ends up needing: who's allowed to call this,
+how much are they allowed to call it, what happens when a backend is slow
+or down, and can we actually see what's going on. It's a single FastAPI
+application (no microservices sprawl) backed by Redis and PostgreSQL, and
+the whole stack -- gateway, databases, demo backends, and a Prometheus +
+Grafana observability stack -- runs locally with one `docker-compose up`.
 
-See [`docs/architecture.md`](docs/architecture.md) for the design, the
-rate-limiting algorithm trade-offs, and known limitations.
-See [`docs/testing.md`](docs/testing.md) for how to run the test suite.
-See [`docs/runbook.md`](docs/runbook.md) for day-to-day operation and
-incident diagnosis.
+![Gatekeeper demo: auth, rate limiting, circuit breaking, and diagnostics against a live stack](docs/demo.gif)
+
+*Recorded against the actual running stack with [`scripts/demo.sh`](scripts/demo.sh) -- see [`scripts/record_demo.sh`](scripts/record_demo.sh) to regenerate it.*
+
+## What it does
+
+- **Routes and proxies** requests to one or more backend services, based
+  on a declarative, validated config file -- clients can never reach an
+  arbitrary upstream.
+- **Authenticates** every call with an API key (`X-API-Key`), issued and
+  revoked through an admin API. Only a salted hash of the key is ever
+  stored; the raw secret is shown exactly once, at creation time.
+- **Rate limits** per client and per route using a Redis-backed token
+  bucket, atomically enforced across however many gateway replicas you
+  run, with tiered quotas (`free` / `standard` / `premium`) and a
+  configurable burst allowance.
+- **Retries** safe (idempotent) requests with jittered exponential
+  backoff, and **trips a circuit breaker** per upstream after repeated
+  failures -- so one unhealthy backend doesn't take the whole gateway down
+  with it, and clients get an immediate, honest `503` instead of waiting
+  on a doomed request.
+- **Tags every request** with a correlation ID, propagates it to the
+  upstream and back, and logs structured JSON with method, route, status,
+  duration, and outcome -- so one request can be traced end to end.
+- **Exposes Prometheus metrics** (throughput, latency, rejections, retries,
+  circuit-breaker state, dependency health) and ships a provisioned
+  Grafana dashboard for them.
+- **Fails safely**: a malformed config refuses to start rather than run
+  half-configured; a Redis outage rejects traffic by default
+  (`fail_closed`) rather than let it through unmetered; every error the
+  gateway itself produces comes back as `{"error": {"code", "message",
+  "request_id"}}`, distinct from whatever an upstream itself returned.
+
+## How it works
+
+```mermaid
+flowchart LR
+    client["Client"] --> gw["Gatekeeper"]
+    subgraph gw_internal["Request pipeline"]
+        direction LR
+        auth["API-key auth"] --> rl["Rate limiter<br/>(token bucket)"]
+        rl --> cb["Circuit breaker"]
+        cb --> proxy["Retry + proxy"]
+    end
+    gw --> gw_internal
+    gw_internal --> backend["Your backend service(s)"]
+    gw -. "key hashes, clients, audit log" .-> pg[("PostgreSQL")]
+    gw -. "rate-limit buckets" .-> redis[("Redis")]
+    prom["Prometheus"] -- scrapes --> gw
+    grafana["Grafana"] --> prom
+```
+
+A request that reaches the gateway goes through, in order: route
+resolution (longest-prefix match against `config/routes.yaml`, 404 if
+nothing matches), API-key authentication against PostgreSQL, the token-
+bucket rate-limit check against Redis (both a per-client-tier bucket and a
+per-route bucket), a circuit-breaker check for that route's upstream, and
+finally the proxied HTTP call itself -- retried with backoff if it's a
+safe method and the failure looks transient. Every one of those steps can
+reject the request with a specific, typed error; none of them can be
+skipped by a client.
+
+The full design rationale -- why a token bucket over a sliding-window
+counter, why the circuit breaker is per-process rather than
+cluster-coordinated, how retries interact with rate limits so they can't
+turn into a retry storm, and known limitations (no response streaming, no
+idempotency keys) -- is written up in
+[`docs/architecture.md`](docs/architecture.md).
 
 ## Quickstart
 
@@ -32,6 +98,9 @@ curl -s -u admin:$(grep GATEKEEPER_ADMIN_PASSWORD .env | cut -d= -f2) \
 # call it through the gateway
 curl -H "X-API-Key: <api_key from above>" http://127.0.0.1:8000/api/users/42
 ```
+
+Or run the full scripted walkthrough shown in the recording above:
+`./scripts/demo.sh` (against a running stack).
 
 | Service | URL |
 |---|---|
@@ -63,7 +132,7 @@ curl -H "X-API-Key: <api_key from above>" http://127.0.0.1:8000/api/users/42
 - **Load test** (`locustfile.py`): steady / bursty / chaos traffic shapes.
 - **CI** (`.github/workflows/ci.yml`): lint, type-check, security scan
   (Bandit + pip-audit + Trivy), unit tests, integration tests, Docker
-  builds.
+  builds -- all green on every push.
 
 ## Local development (without Docker)
 
@@ -96,6 +165,15 @@ uvicorn gatekeeper.main:app --reload --port 8000
   expire.
 - See [`docs/architecture.md`](docs/architecture.md#rate-limiting-algorithm-and-trade-offs)
   for how tiers map to Redis token buckets.
+
+## Documentation
+
+- [`docs/architecture.md`](docs/architecture.md) -- design, the
+  rate-limiting algorithm and its trade-offs, and known limitations.
+- [`docs/testing.md`](docs/testing.md) -- how to run the unit, integration,
+  and load test suites.
+- [`docs/runbook.md`](docs/runbook.md) -- day-to-day operation and
+  incident diagnosis.
 
 ## License
 
