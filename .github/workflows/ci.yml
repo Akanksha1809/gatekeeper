@@ -82,6 +82,7 @@ jobs:
           context: .
           file: Dockerfile
           push: false
+          load: true # so Trivy can find it via the local Docker daemon below
           tags: gatekeeper:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
